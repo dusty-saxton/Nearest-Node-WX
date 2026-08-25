@@ -138,7 +138,7 @@
     nationwideError = '';
     render();
     try {
-      const res = await fetch('https://api.weather.gov/alerts/active?severity=Severe,Extreme&status=Actual&message_type=Alert');
+      const res = await fetch('https://api.weather.gov/alerts/active?severity=Severe&severity=Extreme&status=Actual&message_type=Alert');
       if (!res.ok) throw new Error('NWS API error ' + res.status);
       const data = await res.json();
       const alertsWithGeom = (data.features || []).filter(f => f.geometry);
@@ -163,7 +163,7 @@
         : '';
     } catch (e) {
       nationwideMatches = [];
-      nationwideError = 'Could not check nationwide alerts.';
+      nationwideError = 'Could not check nationwide alerts: ' + (e.message || 'unknown error');
     }
     nationwideLoading = false;
     nationwideChecked = true;
