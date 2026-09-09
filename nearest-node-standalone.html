@@ -163,10 +163,13 @@
       const allFeatures = data.features || [];
       nationwideAlertCount = allFeatures.length;
 
-      const warnings = allFeatures.filter(f => f.properties && ['Extreme', 'Severe'].includes(f.properties.severity));
-      const watches = allFeatures.filter(f => f.properties &&
-        !['Extreme', 'Severe'].includes(f.properties.severity) &&
-        /watch/i.test(f.properties.event || ''));
+      // Classify by the alert's event name text, not severity — NWS assigns
+      // 'Severe' severity to both Severe Thunderstorm Watches AND Warnings,
+      // so severity alone can't tell watch from warning.
+      const warnings = allFeatures.filter(f => f.properties &&
+        /warning/i.test(f.properties.event || '') &&
+        ['Extreme', 'Severe'].includes(f.properties.severity));
+      const watches = allFeatures.filter(f => f.properties && /watch/i.test(f.properties.event || ''));
 
       function matchFeatures(features) {
         const matched = [];
