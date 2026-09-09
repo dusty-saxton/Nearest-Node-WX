@@ -82,6 +82,8 @@
   let nationwideAlertCount = 0;
   let nationwideRawTotal = null;
   let nationwideWatchMatches = [];
+  let nationwideRawAlerts = [];
+  let showNationwideDebug = false;
 
   async function checkWeatherAlerts(lat, lon) {
     try {
@@ -191,6 +193,9 @@
 
       nationwideMatches = matchFeatures(warnings);
       nationwideWatchMatches = matchFeatures(watches);
+      nationwideRawAlerts = allFeatures
+        .filter(f => f.geometry && f.properties)
+        .map(f => ({ event: f.properties.event, area: f.properties.areaDesc, severity: f.properties.severity }));
 
       const withGeom = allFeatures.filter(f => f.geometry).length;
       nationwideError = withGeom < allFeatures.length
@@ -410,6 +415,16 @@
             </div>`;
           }).join('')}
         ` : ''}
+        ${nationwideChecked && !nationwideLoading && nationwideRawAlerts.length ? `
+          <div class="asl-toggle" id="toggleNationwideDebug" style="margin-top:8px;">
+            ${showNationwideDebug ? '– Hide' : '🔎 Show'} all ${nationwideRawAlerts.length} boundary-backed alerts (for cross-checking, regardless of match)
+          </div>
+          ${showNationwideDebug ? `
+            <div class="asl-small" style="margin-top:4px;max-height:200px;overflow-y:auto;">
+              ${nationwideRawAlerts.map(a => `${a.event} (${a.severity}) — ${a.area}`).join('<br>')}
+            </div>
+          ` : ''}
+        ` : ''}
         <div class="asl-small" style="margin-top:8px;">
           Checks every currently active NWS alert nationwide and tests which of the
           ${FULL_DB.length} stored nodes physically sit inside a warned polygon — not just "same state,"
@@ -473,6 +488,8 @@
 
     document.getElementById('locateBtn').onclick = () => locate(document.getElementById('statusEl'));
     document.getElementById('nationwideBtn').onclick = () => checkNationwideSevereWeather();
+    const debugToggle = document.getElementById('toggleNationwideDebug');
+    if (debugToggle) debugToggle.onclick = () => { showNationwideDebug = !showNationwideDebug; render(); };
     document.getElementById('toggleForm').onclick = () => { showForm = !showForm; render(); };
     document.getElementById('toggleSearch').onclick = () => { showSearch = !showSearch; render(); };
 
