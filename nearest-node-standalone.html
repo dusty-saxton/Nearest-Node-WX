@@ -80,6 +80,8 @@
   let nationwideLoading = false;
   let nationwideError = '';
   let nationwideAlertCount = 0;
+  let nationwideRawTotal = null;
+  let nationwideWatchMatches = [];
 
   async function checkWeatherAlerts(lat, lon) {
     try {
@@ -138,31 +140,62 @@
     nationwideError = '';
     render();
     try {
-      const res = await fetch('https://api.weather.gov/alerts/active?severity=Severe&severity=Extreme&status=Actual&message_type=Alert');
-      if (!res.ok) throw new Error('NWS API error ' + res.status);
-      const data = await res.json();
-      const alertsWithGeom = (data.features || []).filter(f => f.geometry);
-      nationwideAlertCount = (data.features || []).length;
+      // Sanity-check count, independent of any filtering below — if this is 0
+      // while the search results below aren't, the fetch/parse pipeline itself
+      // has a real bug rather than there just being no alerts right now.
+      try {
+        const countRes = await fetch('https://api.weather.gov/alerts/active/count');
+        if (countRes.ok) {
+          const countData = await countRes.json();
+          nationwideRawTotal = countData.total ?? null;
+        }
+      } catch (_) { nationwideRawTotal = null; }
 
-      const matched = [];
-      const seenIdx = new Set();
-      for (const feature of alertsWithGeom) {
-        const props = feature.properties || {};
-        for (let idx = 0; idx < FULL_DB.length; idx++) {
-          if (seenIdx.has(idx)) continue;
-          const n = FULL_DB[idx];
-          if (pointInGeometry(n.lo, n.la, feature.geometry)) {
-            matched.push({ ...n, _idx: idx, _event: props.event, _severity: props.severity });
-            seenIdx.add(idx);
+      // No query-string filtering at all here — every param combo we've tried
+      // has been rejected by the API at one point or another. Filter client-side instead.
+      const res = await fetch('https://api.weather.gov/alerts/active');
+      if (!res.ok) {
+        let detail = '';
+        try { const errBody = await res.json(); detail = errBody.detail || errBody.title || ''; } catch (_) {}
+        throw new Error('NWS API error ' + res.status + (detail ? ' - ' + detail : ''));
+      }
+      const data = await res.json();
+      const allFeatures = data.features || [];
+      nationwideAlertCount = allFeatures.length;
+
+      const warnings = allFeatures.filter(f => f.properties && ['Extreme', 'Severe'].includes(f.properties.severity));
+      const watches = allFeatures.filter(f => f.properties &&
+        !['Extreme', 'Severe'].includes(f.properties.severity) &&
+        /watch/i.test(f.properties.event || ''));
+
+      function matchFeatures(features) {
+        const matched = [];
+        const seenIdx = new Set();
+        for (const feature of features) {
+          if (!feature.geometry) continue;
+          const props = feature.properties || {};
+          for (let idx = 0; idx < FULL_DB.length; idx++) {
+            if (seenIdx.has(idx)) continue;
+            const n = FULL_DB[idx];
+            if (pointInGeometry(n.lo, n.la, feature.geometry)) {
+              matched.push({ ...n, _idx: idx, _event: props.event, _severity: props.severity });
+              seenIdx.add(idx);
+            }
           }
         }
+        return matched;
       }
-      nationwideMatches = matched;
-      nationwideError = alertsWithGeom.length < (data.features || []).length
-        ? `Note: ${(data.features || []).length - alertsWithGeom.length} active alert(s) have no published boundary and couldn't be matched to nodes.`
+
+      nationwideMatches = matchFeatures(warnings);
+      nationwideWatchMatches = matchFeatures(watches);
+
+      const withGeom = allFeatures.filter(f => f.geometry).length;
+      nationwideError = withGeom < allFeatures.length
+        ? `Note: ${allFeatures.length - withGeom} active alert(s) have no published boundary and couldn't be matched to nodes.`
         : '';
     } catch (e) {
       nationwideMatches = [];
+      nationwideWatchMatches = [];
       nationwideError = 'Could not check nationwide alerts: ' + (e.message || 'unknown error');
     }
     nationwideLoading = false;
@@ -343,11 +376,25 @@
         </button>
         ${nationwideChecked && !nationwideLoading ? `
           <div class="asl-sub" style="margin:8px 0 0;">
-            ${nationwideAlertCount} active severe/extreme alert${nationwideAlertCount === 1 ? '' : 's'} nationwide ·
-            ${nationwideMatches.length} stored node${nationwideMatches.length === 1 ? '' : 's'} fall inside a warned area
+            ${nationwideAlertCount} active alert${nationwideAlertCount === 1 ? '' : 's'} nationwide right now
+            ${nationwideRawTotal !== null ? `(NWS count endpoint independently reports ${nationwideRawTotal})` : ''} ·
+            ${nationwideMatches.length} node${nationwideMatches.length === 1 ? '' : 's'} in a Warning ·
+            ${nationwideWatchMatches.length} node${nationwideWatchMatches.length === 1 ? '' : 's'} in a Watch
           </div>
           ${nationwideError ? `<div class="asl-small" style="margin-top:4px;">${nationwideError}</div>` : ''}
+          ${nationwideMatches.length ? `<div class="asl-small" style="margin-top:8px;font-weight:600;">Warnings (Severe/Extreme)</div>` : ''}
           ${nationwideMatches.map(n => {
+            const { dot, name, meta, connectBtn } = nodeRowHtml(n, false);
+            const isPinned = pinnedIds.has(n.n + '|' + n.e + '|' + n.t);
+            return `
+            <div class="asl-node">
+              <div class="asl-node-info">${dot}<div class="asl-node-text"><div class="asl-node-name">${name}</div><div class="asl-node-meta">${meta} · ${n._event}</div></div></div>
+              ${connectBtn}
+              ${!isPinned ? `<button class="asl-addbtn" data-pin-idx="${n._idx}">Pin</button>` : ''}
+            </div>`;
+          }).join('')}
+          ${nationwideWatchMatches.length ? `<div class="asl-small" style="margin-top:8px;font-weight:600;">Watches</div>` : ''}
+          ${nationwideWatchMatches.map(n => {
             const { dot, name, meta, connectBtn } = nodeRowHtml(n, false);
             const isPinned = pinnedIds.has(n.n + '|' + n.e + '|' + n.t);
             return `
@@ -359,9 +406,10 @@
           }).join('')}
         ` : ''}
         <div class="asl-small" style="margin-top:8px;">
-          Checks every currently active NWS Severe/Extreme alert nationwide and tests which of the
-          ${FULL_DB.length} stored nodes physically sit inside a warned polygon — not just "same state."
-          Alerts without a published boundary can't be matched this way and are noted above.
+          Checks every currently active NWS alert nationwide and tests which of the
+          ${FULL_DB.length} stored nodes physically sit inside a warned polygon — not just "same state,"
+          split into Warnings (Severe/Extreme) and Watches. Alerts without a published boundary can't be
+          matched this way and are noted above.
         </div>
       </div>
 
