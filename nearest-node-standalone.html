@@ -300,15 +300,15 @@
     const city = n.city || n.t;
     const state = n.st || n.state;
     const cityLabel = state ? `${city}, ${state}` : city;
-    // AllStarLink's built-in EchoLink bridge: any EchoLink node can be dialed
-    // as an AllStar node number by padding it to 6 digits and prefixing '3'.
-    // e.g. EchoLink 9999 -> AllStar 3009999. Works from any asl:// client,
-    // including RepeaterPhone, since it's handled by the AllStarLink network itself.
-    const elBridgeNode = (!node && el) ? ('3' + String(el).padStart(6, '0')) : null;
+    // NOTE: There is no working direct-dial URL for EchoLink-only nodes.
+    // RepeaterPhone's asl:// scheme is for real AllStarLink node numbers only
+    // (confirmed: the '3 + padded EchoLink number' bridge trick returns
+    // "nodeNotFound" in practice). EchoLink-only nodes must be looked up by
+    // callsign in RepeaterPhone's own EchoLink tab instead.
     const connectBtn = node
       ? `<a class="asl-connect" href="asl://${node}">Connect</a><button class="asl-copybtn" data-copy="${node}">Copy #</button>`
-      : (elBridgeNode
-          ? `<a class="asl-connect el" href="asl://${elBridgeNode}" title="Dials via AllStarLink's EchoLink bridge">Connect (EL)</a><button class="asl-copybtn" data-copy="${elBridgeNode}">Copy #</button>`
+      : (el
+          ? `<button class="asl-connect el" disabled title="No direct dial link - search this callsign in RepeaterPhone's EchoLink tab">EL only</button><button class="asl-copybtn" data-copy="${n.c || ''}">Copy Callsign</button>`
           : '');
     const meta = `${node ? 'ASL ' + node : ''}${node && el ? ' · ' : ''}${el ? 'EL ' + el : ''} · ${cityLabel}` +
       (showDist && n._dist !== undefined ? ` · <span class="asl-node-dist">${n._dist.toFixed(1)} mi</span>` : '');
