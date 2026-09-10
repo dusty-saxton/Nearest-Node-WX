@@ -82,6 +82,9 @@
   let nationwideAlertCount = 0;
   let nationwideRawTotal = null;
   let nationwideWatchMatches = [];
+  let nationwideNearbyMatches = [];
+  let nationwideNearbyWatchMatches = [];
+  const NEARBY_RADIUS_MILES = 35;
   let nationwideRawAlerts = [];
   let showNationwideDebug = false;
 
@@ -137,6 +140,46 @@
     return false;
   }
 
+  // Approximate flat-earth projection (fine for distances under ~100 miles) so we
+  // can find how far a node sits from a warning polygon's edge, not just whether
+  // it's strictly inside it.
+  const MILES_PER_DEG_LAT = 69.172;
+  function milesPerDegLon(lat) { return 69.172 * Math.cos(lat * Math.PI / 180); }
+  function toXY(lat, lon, refLat) { return [lon * milesPerDegLon(refLat), lat * MILES_PER_DEG_LAT]; }
+  function pointToSegmentMiles(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cy = ay + t * dy;
+    return Math.hypot(px - cx, py - cy);
+  }
+  function minDistToRingMiles(lat, lon, ring, refLat) {
+    const [px, py] = toXY(lat, lon, refLat);
+    let min = Infinity;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [ax, ay] = toXY(ring[i][1], ring[i][0], refLat);
+      const [bx, by] = toXY(ring[i + 1][1], ring[i + 1][0], refLat);
+      const d = pointToSegmentMiles(px, py, ax, ay, bx, by);
+      if (d < min) min = d;
+    }
+    return min;
+  }
+  function minDistToGeometryMiles(lat, lon, geometry) {
+    if (!geometry) return Infinity;
+    let polys = [];
+    if (geometry.type === 'Polygon') polys = [geometry.coordinates];
+    else if (geometry.type === 'MultiPolygon') polys = geometry.coordinates;
+    let min = Infinity;
+    for (const poly of polys) {
+      for (const ring of poly) {
+        const d = minDistToRingMiles(lat, lon, ring, lat);
+        if (d < min) min = d;
+      }
+    }
+    return min;
+  }
+
   async function checkNationwideSevereWeather() {
     nationwideLoading = true;
     nationwideError = '';
@@ -188,11 +231,37 @@
             }
           }
         }
-        return matched;
+        return { matched, seenIdx };
       }
 
-      nationwideMatches = matchFeatures(warnings);
-      nationwideWatchMatches = matchFeatures(watches);
+      // Nodes within NEARBY_RADIUS_MILES of a warning polygon's edge, but not
+      // already counted as strictly inside it.
+      function matchNearby(features, excludeIdx, maxMiles) {
+        const nearby = [];
+        const seen = new Set();
+        for (const feature of features) {
+          if (!feature.geometry) continue;
+          const props = feature.properties || {};
+          for (let idx = 0; idx < FULL_DB.length; idx++) {
+            if (excludeIdx.has(idx) || seen.has(idx)) continue;
+            const n = FULL_DB[idx];
+            const d = minDistToGeometryMiles(n.la, n.lo, feature.geometry);
+            if (d <= maxMiles) {
+              nearby.push({ ...n, _idx: idx, _event: props.event, _severity: props.severity, _dist: d });
+              seen.add(idx);
+            }
+          }
+        }
+        nearby.sort((a, b) => a._dist - b._dist);
+        return nearby;
+      }
+
+      const warnResult = matchFeatures(warnings);
+      const watchResult = matchFeatures(watches);
+      nationwideMatches = warnResult.matched;
+      nationwideWatchMatches = watchResult.matched;
+      nationwideNearbyMatches = matchNearby(warnings, warnResult.seenIdx, NEARBY_RADIUS_MILES);
+      nationwideNearbyWatchMatches = matchNearby(watches, watchResult.seenIdx, NEARBY_RADIUS_MILES);
       nationwideRawAlerts = allFeatures
         .filter(f => f.geometry && f.properties)
         .map(f => ({ event: f.properties.event, area: f.properties.areaDesc, severity: f.properties.severity }));
@@ -204,6 +273,8 @@
     } catch (e) {
       nationwideMatches = [];
       nationwideWatchMatches = [];
+      nationwideNearbyMatches = [];
+      nationwideNearbyWatchMatches = [];
       nationwideError = 'Could not check nationwide alerts: ' + (e.message || 'unknown error');
     }
     nationwideLoading = false;
@@ -410,6 +481,17 @@
               ${!isPinned ? `<button class="asl-addbtn" data-pin-idx="${n._idx}">Pin</button>` : ''}
             </div>`;
           }).join('')}
+          ${nationwideNearbyMatches.length ? `<div class="asl-small" style="margin-top:8px;font-weight:600;">Within ${NEARBY_RADIUS_MILES} mi of a Warning (not inside it)</div>` : ''}
+          ${nationwideNearbyMatches.map(n => {
+            const { dot, name, meta, connectBtn } = nodeRowHtml(n, false);
+            const isPinned = pinnedIds.has(n.n + '|' + n.e + '|' + n.t);
+            return `
+            <div class="asl-node">
+              <div class="asl-node-info">${dot}<div class="asl-node-text"><div class="asl-node-name">${name}</div><div class="asl-node-meta">${meta} · ${n._event} · ${n._dist.toFixed(1)} mi away</div></div></div>
+              ${connectBtn}
+              ${!isPinned ? `<button class="asl-addbtn" data-pin-idx="${n._idx}">Pin</button>` : ''}
+            </div>`;
+          }).join('')}
           ${nationwideWatchMatches.length ? `<div class="asl-small" style="margin-top:8px;font-weight:600;">Watches</div>` : ''}
           ${nationwideWatchMatches.map(n => {
             const { dot, name, meta, connectBtn } = nodeRowHtml(n, false);
@@ -417,6 +499,17 @@
             return `
             <div class="asl-node">
               <div class="asl-node-info">${dot}<div class="asl-node-text"><div class="asl-node-name">${name}</div><div class="asl-node-meta">${meta} · ${n._event}</div></div></div>
+              ${connectBtn}
+              ${!isPinned ? `<button class="asl-addbtn" data-pin-idx="${n._idx}">Pin</button>` : ''}
+            </div>`;
+          }).join('')}
+          ${nationwideNearbyWatchMatches.length ? `<div class="asl-small" style="margin-top:8px;font-weight:600;">Within ${NEARBY_RADIUS_MILES} mi of a Watch (not inside it)</div>` : ''}
+          ${nationwideNearbyWatchMatches.map(n => {
+            const { dot, name, meta, connectBtn } = nodeRowHtml(n, false);
+            const isPinned = pinnedIds.has(n.n + '|' + n.e + '|' + n.t);
+            return `
+            <div class="asl-node">
+              <div class="asl-node-info">${dot}<div class="asl-node-text"><div class="asl-node-name">${name}</div><div class="asl-node-meta">${meta} · ${n._event} · ${n._dist.toFixed(1)} mi away</div></div></div>
               ${connectBtn}
               ${!isPinned ? `<button class="asl-addbtn" data-pin-idx="${n._idx}">Pin</button>` : ''}
             </div>`;
